@@ -260,7 +260,7 @@ const Scanner = struct {
     }
 
     fn digit(c: u8) bool {
-        return if (c >= '0' and c <= '9') true else false;
+        return c >= '0' and c <= '9';
     }
 
     // return the character at the current index but don't consume it
