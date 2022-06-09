@@ -269,7 +269,7 @@ const Scanner = struct {
         return self.buf[self.current];
     }
 
-    // return the character at the current index but don't consume it
+    // return the character at the next index but don't consume it
     fn peekNext(self: *Scanner) u8 {
         if (self.current + 1 >= self.buf.len) return 0;
         return self.buf[self.current + 1];
