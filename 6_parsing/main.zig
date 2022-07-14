@@ -10,7 +10,7 @@ fn run(allocator: std.mem.Allocator, buf: []const u8) !tokenizer.Scanner {
     try tokenizer.printTokens(tokens);
 
     var parse = parser.Parser.init(allocator, tokens);
-    var expr = parse.expression();
+    var expr = try parse.expression();
 
     std.debug.print("expr: {s}\n", .{expr});
 
