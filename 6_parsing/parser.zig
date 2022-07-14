@@ -7,11 +7,12 @@ pub const ExprTypes = enum {
     literal,
     unary,
     binary,
+    grouping,
 };
 
 pub const LiteralTypes = enum {
     boolType,
-    nullType,
+    nilType,
     stringType,
     numberType,
 };
@@ -27,12 +28,16 @@ pub const UnaryExpr = struct {
     right: *Expr,
 };
 
+pub const GroupingExpr = struct {
+    expr: *Expr,
+};
+
 pub const LiteralExpr = struct {
     value: union(LiteralTypes) {
         boolType: bool,
         // we don't actually need anything here, this will always be true.
         // Better way to represent this?
-        nullType: bool,
+        nilType: bool,
         stringType: []const u8,
         numberType: f64,
     },
@@ -43,7 +48,14 @@ pub const Expr = struct {
         literal: LiteralExpr,
         unary: UnaryExpr,
         binary: BinaryExpr,
+        grouping: GroupingExpr,
     },
+};
+
+// recursive functions cannot infer error sets
+pub const ParserError = error{
+    ParserError,
+    InvalidPrimary,
 };
 
 pub const Parser = struct {
@@ -58,16 +70,16 @@ pub const Parser = struct {
         };
     }
 
-    pub fn expression(self: *Parser) Expr {
-        return self.equality();
+    pub fn expression(self: *Parser) ParserError!Expr {
+        return try self.equality();
     }
 
     // equality → comparison ( ( "!=" | "==" ) comparison )* ;
-    fn equality(self: *Parser) Expr {
-        var expr = self.comparison();
+    fn equality(self: *Parser) ParserError!Expr {
+        var expr = try self.comparison();
         while (self.match2(.bang_equal, .equal_equal)) {
             var operator = self.tokens.items[self.current - 1];
-            var right = self.comparison();
+            var right = try self.comparison();
             expr = Expr{
                 .data = .{
                     .binary = BinaryExpr{
@@ -82,11 +94,11 @@ pub const Parser = struct {
     }
 
     // comparison → term ( ( ">" | ">=" | "<" | "<=" ) term )* ;
-    fn comparison(self: *Parser) Expr {
-        var expr = self.term();
+    fn comparison(self: *Parser) ParserError!Expr {
+        var expr = try self.term();
         while (self.match4(.greater, .greater_equal, .less, .less_equal)) {
             var operator = self.tokens.items[self.current - 1];
-            var right = self.term();
+            var right = try self.term();
             expr = Expr{
                 .data = .{
                     .binary = BinaryExpr{
@@ -101,11 +113,11 @@ pub const Parser = struct {
     }
 
     // term → factor ( ( "-" | "+" ) factor )* ;
-    fn term(self: *Parser) Expr {
-        var expr = self.factor();
+    fn term(self: *Parser) ParserError!Expr {
+        var expr = try self.factor();
         while (self.match2(.minus, .plus)) {
             var operator = self.tokens.items[self.current - 1];
-            var right = self.factor();
+            var right = try self.factor();
             expr = Expr{
                 .data = .{
                     .binary = BinaryExpr{
@@ -120,11 +132,11 @@ pub const Parser = struct {
     }
 
     // // factor → unary ( ( "/" | "*" ) unary )* ;
-    fn factor(self: *Parser) Expr {
-        var expr = self.unary();
+    fn factor(self: *Parser) ParserError!Expr {
+        var expr = try self.unary();
         while (self.match2(.minus, .plus)) {
             var operator = self.tokens.items[self.current - 1];
-            var right = self.unary();
+            var right = try self.unary();
             expr = Expr{
                 .data = .{
                     .binary = BinaryExpr{
@@ -139,10 +151,10 @@ pub const Parser = struct {
     }
 
     // unary → ( "!" | "-" ) unary | primary ;
-    fn unary(self: *Parser) Expr {
+    fn unary(self: *Parser) ParserError!Expr {
         if (self.match2(.bang, .minus)) {
             var operator = self.tokens.items[self.current - 1];
-            var right = self.unary();
+            var right = try self.unary();
             return Expr{
                 .data = .{
                     .unary = UnaryExpr{
@@ -153,38 +165,86 @@ pub const Parser = struct {
             };
         }
 
-        return self.primary();
+        return try self.primary();
     }
 
     // // primary → NUMBER | STRING | "true" | "false" | "nil"
     // //           | "(" expression ")" ;
-    fn primary(self: *Parser) Expr {
-        if (self.match(.keyword_false))
+    fn primary(self: *Parser) ParserError!Expr {
+        if (self.match(.keyword_false)) return boolLiteral(false);
+        if (self.match(.keyword_true)) return boolLiteral(true);
+        if (self.match(.keyword_nil)) return nilLiteral();
+        if (self.match(.number))
+            return numericLiteral(self.tokens.items[self.current - 1].lexeme.float);
+        if (self.match(.string))
+            return stringLiteral(self.tokens.items[self.current - 1].lexeme.bytes);
+        if (self.match(.left_paren)) {
+            var expr = try self.expression();
+            // TODO: throw an error if the next token isn't a right paren
+            try self.consume(.right_paren, "Need to figure out error messages");
             return Expr{
-                .data = .{
-                    .literal = LiteralExpr{
-                        .value = .{
-                            .boolType = false,
-                        },
-                    },
-                },
+                .data = .{ .grouping = GroupingExpr{ .expr = &expr } },
             };
-        if (self.match(.keyword_true))
-            return Expr{
-                .data = .{
-                    .literal = LiteralExpr{
-                        .value = .{
-                            .boolType = true,
-                        },
-                    },
-                },
-            };
-        //TODO handle string, number, paren cases
+        }
+
+        return ParserError.InvalidPrimary;
+    }
+
+    fn consume(self: *Parser, typ: TokenType, msg: []const u8) ParserError!void {
+        if (self.check(typ)) {
+            self.current += 1;
+            return;
+        }
+
+        // zig doesn't allow you to associate a string with an error, so I
+        // probably need to use some heavier-weight mechanism here?
+        // see https://github.com/ziglang/zig/issues/2647
+        std.debug.print("{s}\n", .{msg});
+        return ParserError.ParserError;
+    }
+
+    fn stringLiteral(val: []const u8) Expr {
         return Expr{
             .data = .{
                 .literal = LiteralExpr{
                     .value = .{
-                        .nullType = true,
+                        .stringType = val,
+                    },
+                },
+            },
+        };
+    }
+
+    fn numericLiteral(val: f64) Expr {
+        return Expr{
+            .data = .{
+                .literal = LiteralExpr{
+                    .value = .{
+                        .numberType = val,
+                    },
+                },
+            },
+        };
+    }
+
+    fn nilLiteral() Expr {
+        return Expr{
+            .data = .{
+                .literal = LiteralExpr{
+                    .value = .{
+                        .nilType = true,
+                    },
+                },
+            },
+        };
+    }
+
+    fn boolLiteral(val: bool) Expr {
+        return Expr{
+            .data = .{
+                .literal = LiteralExpr{
+                    .value = .{
+                        .boolType = val,
                     },
                 },
             },
